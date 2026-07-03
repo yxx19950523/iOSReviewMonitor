@@ -22,6 +22,8 @@ APP_NAME = "iOS 审核状态监控"
 WAITING_STATES = {
     "PREPARE_FOR_SUBMISSION",
     "DEVELOPER_REJECTED",
+    "READY_FOR_REVIEW",
+    "READY_TO_SUBMIT",
     "WAITING_FOR_REVIEW",
     "INVALID_BINARY",
 }
@@ -34,6 +36,7 @@ DONE_STATES = {
     "REJECTED",
     "METADATA_REJECTED",
     "APPROVED",
+    "ACCEPTED",
     "RUNNING",
     "COMPLETE",
     "COMPLETED",
@@ -54,6 +57,7 @@ STATE_LABELS = {
     "DEVELOPER_REJECTED": "开发者已拒绝",
     "INVALID_BINARY": "二进制无效",
     "APPROVED": "已审核通过",
+    "ACCEPTED": "已审核通过",
     "RUNNING": "已完成 / 正在运行",
     "COMPLETE": "已完成",
     "COMPLETED": "已完成",
@@ -77,17 +81,19 @@ def data_dir() -> Path:
 
 
 def classify_state(state: str) -> str:
-    if state in IN_REVIEW_STATES:
+    normalized = (state or "").upper()
+    if normalized in IN_REVIEW_STATES or "IN_REVIEW" in normalized:
         return "in_review"
-    if state in DONE_STATES:
+    if normalized in DONE_STATES or any(token in normalized for token in ("APPROVED", "ACCEPTED", "COMPLETE", "COMPLETED")):
         return "done"
-    if state in WAITING_STATES:
+    if normalized in WAITING_STATES or "WAITING" in normalized or "READY_FOR_REVIEW" in normalized:
         return "waiting"
     return "unknown"
 
 
 def status_text(state: str) -> str:
-    return STATE_LABELS.get(state, state or "未知")
+    normalized = (state or "").upper()
+    return STATE_LABELS.get(normalized, state or "未知")
 
 
 def parse_app_ids(raw: str) -> list[str]:
@@ -126,6 +132,7 @@ class ReviewMonitorApp:
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.stop_event = threading.Event()
         self.worker: threading.Thread | None = None
+        self.validation_worker: threading.Thread | None = None
         self.running = False
         self.last_categories: dict[str, str] = {}
         self.app_rows: dict[str, str] = {}
@@ -354,7 +361,51 @@ class ReviewMonitorApp:
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         app_count = len(parse_app_ids(self.settings.app_id)) or (1 if self.settings.bundle_id else 0)
-        self.log(f"开始监控，App 数量：{app_count}")
+        self.log(f"开始配置自检，App 数量：{app_count}")
+        self.state_var.set("正在自检配置")
+        self.validation_worker = threading.Thread(target=self.validation_loop, daemon=True)
+        self.validation_worker.start()
+
+    def validation_loop(self) -> None:
+        try:
+            if self.settings.demo_mode:
+                if self.stop_event.is_set():
+                    return
+                self.events.put(("validation_ok", "演示模式已跳过 Apple API 自检"))
+                return
+
+            client = self.make_client()
+            app_ids = parse_app_ids(self.settings.app_id)
+            if self.stop_event.is_set():
+                return
+            self.events.put(("log", "验证 API Key、Issuer ID 和 .p8 私钥"))
+            client.validate_credentials()
+            self.events.put(("log", "API 凭证验证通过"))
+
+            if not app_ids:
+                resolved = client.resolve_app_id()
+                app_ids = [resolved]
+                self.events.put(("log", f"Bundle ID 已解析为 App ID：{resolved}"))
+
+            for app_id in app_ids:
+                if self.stop_event.is_set():
+                    return
+                self.events.put(("log", f"自检 App {app_id} 的提交审核状态接口"))
+                app_status = client.app_review_status(app_id)
+                self.events.put(("log", f"自检通过：App {app_id} 提交 App 状态为 {app_status.get('state', 'UNKNOWN')}"))
+                self.events.put(("log", f"自检 App {app_id} 的产品页面优化接口"))
+                ppo_status = client.product_page_optimization_status(app_id)
+                self.events.put(("log", f"自检通过：App {app_id} 产品页面优化状态为 {ppo_status.get('state', 'UNKNOWN')}"))
+
+            self.events.put(("validation_ok", "配置自检通过，开始监控"))
+        except Exception as exc:
+            self.events.put(("validation_error", exc))
+
+    def begin_monitoring_after_validation(self, message: str) -> None:
+        if self.stop_event.is_set():
+            return
+        self.log(message)
+        self.state_var.set("配置自检通过")
         self.worker = threading.Thread(target=self.worker_loop, daemon=True)
         self.worker.start()
 
@@ -366,8 +417,8 @@ class ReviewMonitorApp:
         self.next_var.set("--")
         self.log("已停止")
 
-    def worker_loop(self) -> None:
-        client = AppStoreConnectClient(
+    def make_client(self) -> AppStoreConnectClient:
+        return AppStoreConnectClient(
             ASCConfig(
                 key_id=self.settings.key_id,
                 issuer_id=self.settings.issuer_id,
@@ -376,6 +427,9 @@ class ReviewMonitorApp:
                 bundle_id=self.settings.bundle_id,
             )
         )
+
+    def worker_loop(self) -> None:
+        client = self.make_client()
         demo_states = ["WAITING_FOR_REVIEW", "IN_REVIEW", "PENDING_DEVELOPER_RELEASE", "READY_FOR_SALE"]
         demo_index = 0
         app_ids = parse_app_ids(self.settings.app_id)
@@ -441,15 +495,30 @@ class ReviewMonitorApp:
             elif kind == "error":
                 self.log(f"错误：{payload}")
                 self.checked_var.set(datetime.now().strftime("%H:%M:%S"))
+            elif kind == "validation_ok":
+                self.begin_monitoring_after_validation(str(payload))
+            elif kind == "validation_error":
+                self.handle_validation_error(payload)
             elif kind == "next":
                 self.next_var.set(datetime.fromtimestamp(float(payload)).strftime("%H:%M:%S"))
         self.root.after(200, self.drain_events)
+
+    def handle_validation_error(self, payload: object) -> None:
+        message = f"配置自检失败：{payload}"
+        self.log(message)
+        self.running = False
+        self.start_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
+        self.next_var.set("--")
+        self.state_var.set("配置自检失败")
+        messagebox.showerror("配置自检失败", message)
 
     def handle_state(self, result: dict[str, str]) -> None:
         app_id = str(result.get("app_id") or "--")
         monitor_type = str(result.get("monitor_type") or "app_review")
         kind_label = "提交 App" if monitor_type == "app_review" else "产品页面优化"
         name = str(result.get("name") or kind_label)
+        source = str(result.get("source") or "app_store_version")
         state = result.get("state", "UNKNOWN")
         category = classify_state(state)
         label = status_text(state)
@@ -459,7 +528,7 @@ class ReviewMonitorApp:
         self.version_var.set(version)
         self.checked_var.set(checked_at)
         self.update_app_row(app_id, monitor_type, kind_label, name, version, label, state, checked_at)
-        self.log(f"App {app_id} {kind_label} 状态：{label}（{state}），版本：{version}，名称：{name}")
+        self.log(f"App {app_id} {kind_label} 状态：{label}（{state}），版本：{version}，名称：{name}，来源：{source}")
         self.paint_status(category)
 
         key = f"{app_id}:{monitor_type}"
