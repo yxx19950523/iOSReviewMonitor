@@ -89,6 +89,10 @@ class AppStoreConnectClient:
         text = str(detail).lower()
         return "sort" in text and "parameter" in text and ("not allowed" in text or "illegal" in text)
 
+    def _is_in_review_state(self, state: Any) -> bool:
+        text = str(state or "").upper()
+        return text == "IN_REVIEW" or "IN_REVIEW" in text
+
     def resolve_app_id(self) -> str:
         if self.config.app_id.strip():
             return self.config.app_id.strip()
@@ -155,32 +159,15 @@ class AppStoreConnectClient:
         if review_status:
             return review_status
 
-        experiments = self._list_product_page_optimizations(app_id)
-        if not experiments:
-            return {
-                "app_id": app_id,
-                "monitor_type": "product_page_optimization",
-                "name": "产品页面优化",
-                "version": "--",
-                "state": "NOT_FOUND",
-                "source": "experiment",
-                "experiment_id": "",
-                "experiment_name": "未找到产品页面优化",
-            }
-
-        item = experiments[0]
-        attrs = item.get("attributes") or {}
-        relationships = item.get("relationships") or {}
-        app_store_version = relationships.get("appStoreVersion", {}).get("data") or {}
         return {
             "app_id": app_id,
             "monitor_type": "product_page_optimization",
-            "name": attrs.get("name") or "产品页面优化",
-            "version": app_store_version.get("id") or "--",
-            "state": attrs.get("state", "UNKNOWN"),
-            "source": "experiment",
-            "experiment_id": item.get("id", ""),
-            "experiment_name": attrs.get("name", ""),
+            "name": "产品页面优化",
+            "version": "--",
+            "state": "NOT_IN_REVIEW",
+            "source": "review_submission_scan",
+            "experiment_id": "",
+            "experiment_name": "未发现正在审核的产品页面优化",
         }
 
     def product_page_optimization_review_status(self, app_id: str) -> dict[str, Any] | None:
@@ -207,6 +194,8 @@ class AppStoreConnectClient:
                 state = attrs.get("state") or submission_state
                 name = attrs.get("name") or attrs.get("type") or "产品页面优化"
                 related_id = self._relationship_id(relationships)
+                if not self._is_in_review_state(state):
+                    continue
                 return {
                     "app_id": app_id,
                     "monitor_type": "product_page_optimization",
@@ -218,7 +207,7 @@ class AppStoreConnectClient:
                     "review_submission_id": submission_id,
                 }
 
-            if self._submission_mentions_ppo(submission, included, experiment_ids):
+            if self._is_in_review_state(submission_state) and self._submission_mentions_ppo(submission, included, experiment_ids):
                 return {
                     "app_id": app_id,
                     "monitor_type": "product_page_optimization",

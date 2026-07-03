@@ -26,6 +26,7 @@ WAITING_STATES = {
     "READY_TO_SUBMIT",
     "WAITING_FOR_REVIEW",
     "INVALID_BINARY",
+    "NOT_IN_REVIEW",
 }
 IN_REVIEW_STATES = {"IN_REVIEW"}
 DONE_STATES = {
@@ -64,6 +65,7 @@ STATE_LABELS = {
     "ENDED": "已结束",
     "STOPPED": "已停止",
     "NOT_FOUND": "未找到",
+    "NOT_IN_REVIEW": "未在审核中",
 }
 
 
