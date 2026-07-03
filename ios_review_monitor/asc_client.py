@@ -93,6 +93,13 @@ class AppStoreConnectClient:
         text = str(state or "").upper()
         return text == "IN_REVIEW" or "IN_REVIEW" in text
 
+    def _is_waiting_review_state(self, state: Any) -> bool:
+        text = str(state or "").upper()
+        return text == "WAITING_FOR_REVIEW" or "WAITING" in text or "READY_FOR_REVIEW" in text
+
+    def _is_active_review_state(self, state: Any) -> bool:
+        return self._is_in_review_state(state) or self._is_waiting_review_state(state)
+
     def resolve_app_id(self) -> str:
         if self.config.app_id.strip():
             return self.config.app_id.strip()
@@ -128,6 +135,10 @@ class AppStoreConnectClient:
 
     def app_review_status(self, app_id: str | None = None) -> dict[str, Any]:
         app_id = (app_id or "").strip() or self.resolve_app_id()
+        submission_status = self.app_review_submission_status(app_id)
+        if submission_status:
+            return submission_status
+
         data = self._get(
             f"/apps/{app_id}/appStoreVersions",
             {
@@ -153,11 +164,36 @@ class AppStoreConnectClient:
             "copyright": attrs.get("copyright", ""),
         }
 
+    def app_review_submission_status(self, app_id: str) -> dict[str, Any] | None:
+        submissions = self._list_review_submissions(app_id)
+        for submission, _included in submissions:
+            attrs = submission.get("attributes") or {}
+            state = attrs.get("state") or "UNKNOWN"
+            if not self._is_active_review_state(state):
+                continue
+            submission_id = str(submission.get("id", ""))
+            submitted_date = attrs.get("submittedDate") or attrs.get("createdDate") or ""
+            return {
+                "app_id": app_id,
+                "monitor_type": "app_review",
+                "name": "App 提审",
+                "version_id": submission_id,
+                "version": submission_id or "--",
+                "state": state,
+                "source": "review_submission",
+                "created_date": submitted_date,
+                "copyright": "",
+            }
+        return None
+
     def product_page_optimization_status(self, app_id: str | None = None) -> dict[str, Any]:
         app_id = (app_id or "").strip() or self.resolve_app_id()
         review_status = self.product_page_optimization_review_status(app_id)
         if review_status:
             return review_status
+        experiment_status = self.product_page_optimization_experiment_status(app_id)
+        if experiment_status:
+            return experiment_status
 
         return {
             "app_id": app_id,
@@ -168,6 +204,36 @@ class AppStoreConnectClient:
             "source": "review_submission_scan",
             "experiment_id": "",
             "experiment_name": "未发现正在审核的产品页面优化",
+        }
+
+    def product_page_optimization_experiment_status(self, app_id: str) -> dict[str, Any] | None:
+        experiments = self._list_product_page_optimizations(app_id)
+        if not experiments:
+            return None
+
+        active = []
+        for item in experiments:
+            attrs = item.get("attributes") or {}
+            state = attrs.get("state") or "UNKNOWN"
+            if self._is_active_review_state(state):
+                active.append(item)
+
+        chosen = self._sort_items(active, "createdDate", reverse=True)[0] if active else None
+        if not chosen:
+            return None
+
+        attrs = chosen.get("attributes") or {}
+        relationships = chosen.get("relationships") or {}
+        app_store_version = relationships.get("appStoreVersion", {}).get("data") or {}
+        return {
+            "app_id": app_id,
+            "monitor_type": "product_page_optimization",
+            "name": attrs.get("name") or "产品页面优化",
+            "version": app_store_version.get("id") or "--",
+            "state": attrs.get("state", "UNKNOWN"),
+            "source": "active_experiment",
+            "experiment_id": chosen.get("id", ""),
+            "experiment_name": attrs.get("name", ""),
         }
 
     def product_page_optimization_review_status(self, app_id: str) -> dict[str, Any] | None:
@@ -194,7 +260,7 @@ class AppStoreConnectClient:
                 state = attrs.get("state") or submission_state
                 name = attrs.get("name") or attrs.get("type") or "产品页面优化"
                 related_id = self._relationship_id(relationships)
-                if not self._is_in_review_state(state):
+                if not self._is_active_review_state(state):
                     continue
                 return {
                     "app_id": app_id,
@@ -207,7 +273,7 @@ class AppStoreConnectClient:
                     "review_submission_id": submission_id,
                 }
 
-            if self._is_in_review_state(submission_state) and self._submission_mentions_ppo(submission, included, experiment_ids):
+            if self._is_active_review_state(submission_state) and self._submission_mentions_ppo(submission, included, experiment_ids):
                 return {
                     "app_id": app_id,
                     "monitor_type": "product_page_optimization",
@@ -312,7 +378,7 @@ class AppStoreConnectClient:
             data = self._get(f"/apps/{app_id}/appStoreVersionExperiments", params)
             items = data.get("data") or []
             if items:
-                return items
+                return self._sort_items(items, "createdDate", reverse=True)
         except Exception as exc:
             errors.append(str(exc))
 
@@ -328,7 +394,7 @@ class AppStoreConnectClient:
                 data = self._get(f"/appStoreVersions/{version_id}/appStoreVersionExperiments", params)
                 items = data.get("data") or []
                 if items:
-                    return items
+                    return self._sort_items(items, "createdDate", reverse=True)
             except Exception as exc:
                 errors.append(str(exc))
 
