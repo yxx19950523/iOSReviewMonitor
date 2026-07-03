@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -52,19 +53,41 @@ class AppStoreConnectClient:
         return self._token
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        params = params or {}
+        response = self._request(path, params)
+        if response.status_code >= 400 and "sort" in params:
+            detail = self._response_detail(response)
+            if self._is_sort_parameter_error(detail):
+                retry_params = dict(params)
+                retry_params.pop("sort", None)
+                response = self._request(path, retry_params)
+
+        if response.status_code >= 400:
+            detail = self._response_detail(response)
+            raise ASCError(
+                f"App Store Connect API 请求失败：HTTP {response.status_code}；"
+                f"接口：{path}；参数：{params}；详情：{detail}"
+            )
+        return response.json()
+
+    def _request(self, path: str, params: dict[str, Any]) -> requests.Response:
         response = requests.get(
             f"{API_ROOT}{path}",
-            params=params or {},
+            params=params,
             headers={"Authorization": f"Bearer {self._jwt()}"},
             timeout=30,
         )
-        if response.status_code >= 400:
-            try:
-                detail = response.json()
-            except Exception:
-                detail = response.text
-            raise ASCError(f"App Store Connect API 请求失败：HTTP {response.status_code} {detail}")
-        return response.json()
+        return response
+
+    def _response_detail(self, response: requests.Response) -> Any:
+        try:
+            return response.json()
+        except Exception:
+            return response.text
+
+    def _is_sort_parameter_error(self, detail: Any) -> bool:
+        text = str(detail).lower()
+        return "sort" in text and "parameter" in text and ("not allowed" in text or "illegal" in text)
 
     def resolve_app_id(self) -> str:
         if self.config.app_id.strip():
@@ -85,6 +108,20 @@ class AppStoreConnectClient:
             "app_count_hint": len(data.get("data") or []),
         }
 
+    def app_exists(self, app_id: str) -> dict[str, Any]:
+        app_id = app_id.strip()
+        if not app_id:
+            raise ASCError("App ID 为空。")
+        data = self._get(f"/apps/{app_id}")
+        item = data.get("data") or {}
+        attrs = item.get("attributes") or {}
+        return {
+            "id": item.get("id", app_id),
+            "name": attrs.get("name", ""),
+            "bundle_id": attrs.get("bundleId", ""),
+            "sku": attrs.get("sku", ""),
+        }
+
     def app_review_status(self, app_id: str | None = None) -> dict[str, Any]:
         app_id = (app_id or "").strip() or self.resolve_app_id()
         data = self._get(
@@ -92,10 +129,10 @@ class AppStoreConnectClient:
             {
                 "filter[platform]": "IOS",
                 "sort": "-createdDate",
-                "limit": 1,
+                "limit": 10,
             },
         )
-        items = data.get("data") or []
+        items = self._sort_items(data.get("data") or [], "createdDate", reverse=True)
         if not items:
             raise ASCError("没有找到 iOS App Store 版本。")
         item = items[0]
@@ -209,7 +246,8 @@ class AppStoreConnectClient:
             submissions = data.get("data") or []
             included = data.get("included") or []
             if submissions:
-                return [(item, included) for item in submissions]
+                sorted_submissions = self._sort_items(submissions, "submittedDate", reverse=True)
+                return [(item, included) for item in sorted_submissions]
         return []
 
     def _review_submission_items(self, submission: dict[str, Any], included: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -291,9 +329,9 @@ class AppStoreConnectClient:
 
         versions = self._get(
             f"/apps/{app_id}/appStoreVersions",
-            {"filter[platform]": "IOS", "sort": "-createdDate", "limit": 5},
+            {"filter[platform]": "IOS", "sort": "-createdDate", "limit": 10},
         ).get("data") or []
-        for version in versions:
+        for version in self._sort_items(versions, "createdDate", reverse=True)[:5]:
             version_id = version.get("id")
             if not version_id:
                 continue
@@ -306,3 +344,23 @@ class AppStoreConnectClient:
                 errors.append(str(exc))
 
         return []
+
+    def _sort_items(self, items: list[dict[str, Any]], attr: str, reverse: bool = False) -> list[dict[str, Any]]:
+        def key(item: dict[str, Any]) -> tuple[int, str]:
+            attrs = item.get("attributes") or {}
+            value = attrs.get(attr) or ""
+            parsed = self._parse_date(value)
+            if parsed:
+                return (1, parsed)
+            return (0, str(value))
+
+        return sorted(items, key=key, reverse=reverse)
+
+    def _parse_date(self, value: Any) -> str:
+        if not value:
+            return ""
+        text = str(value).replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(text).isoformat()
+        except Exception:
+            return str(value)

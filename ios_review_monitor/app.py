@@ -390,6 +390,11 @@ class ReviewMonitorApp:
             for app_id in app_ids:
                 if self.stop_event.is_set():
                     return
+                self.events.put(("log", f"检查 App ID 是否存在：{app_id}"))
+                app_info = client.app_exists(app_id)
+                app_name = app_info.get("name") or "未命名 App"
+                bundle_id = app_info.get("bundle_id") or "未知 Bundle ID"
+                self.events.put(("log", f"App ID 有效：{app_id}，名称：{app_name}，Bundle ID：{bundle_id}"))
                 self.events.put(("log", f"自检 App {app_id} 的提交审核状态接口"))
                 app_status = client.app_review_status(app_id)
                 self.events.put(("log", f"自检通过：App {app_id} 提交 App 状态为 {app_status.get('state', 'UNKNOWN')}"))
