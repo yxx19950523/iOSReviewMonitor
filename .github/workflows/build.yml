@@ -3,18 +3,19 @@ name: Build iOS Review Monitor
 on:
   workflow_dispatch:
   push:
-    paths:
-      - "iOSReviewMonitor/**"
+    branches:
+      - main
 
 jobs:
   build:
     strategy:
       matrix:
-        os: [macos-latest, windows-latest]
+        include:
+          - os: macos-latest
+            artifact_name: iOSReviewMonitor-macOS
+          - os: windows-latest
+            artifact_name: iOSReviewMonitor-Windows
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: iOSReviewMonitor
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,5 +25,5 @@ jobs:
       - run: python -m PyInstaller --noconfirm --windowed --name "iOS审核状态监控" main.py
       - uses: actions/upload-artifact@v4
         with:
-          name: iOSReviewMonitor-${{ matrix.os }}
-          path: iOSReviewMonitor/dist/**
+          name: ${{ matrix.artifact_name }}
+          path: dist/**

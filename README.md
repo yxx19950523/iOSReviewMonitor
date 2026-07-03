@@ -62,4 +62,15 @@ cd iOSReviewMonitor
 
 ## GitHub 自动构建
 
-把整个仓库推到 GitHub 后，可以在 Actions 里手动运行 `Build iOS Review Monitor`，会分别生成 macOS 和 Windows 产物。
+推送到 GitHub 后，仓库里的 `.github/workflows/build.yml` 会自动运行。
+
+也可以在 GitHub 仓库页面打开：
+
+```text
+Actions -> Build iOS Review Monitor -> Run workflow
+```
+
+构建完成后，在本次 workflow run 的 `Artifacts` 区域下载：
+
+- `iOSReviewMonitor-macOS`
+- `iOSReviewMonitor-Windows`
