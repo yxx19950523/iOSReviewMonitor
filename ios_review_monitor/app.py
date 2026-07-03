@@ -332,6 +332,7 @@ class AccountTab:
 
         self.build_ui()
         self.apply_settings()
+        self.refresh_var.trace_add("write", self.on_refresh_changed)
         self.root.after(200, self.drain_events)
         self.root.after(500, self.tick)
 
@@ -493,11 +494,23 @@ class AccountTab:
         )
         return self.settings
 
+    def on_refresh_changed(self, *_args: object) -> None:
+        try:
+            self.settings.refresh_seconds = max(30, int(self.refresh_var.get().strip() or "300"))
+        except ValueError:
+            pass
+
     def save_current(self) -> None:
         self.collect_settings()
         self.app.update_tab_title(self)
         self.app.save_document()
-        self.log("当前账号配置已保存")
+        if self.running:
+            self.log(f"当前账号配置已保存，当前检查间隔为 {self.settings.refresh_seconds} 秒")
+        else:
+            self.log("当前账号配置已保存")
+
+    def current_refresh_seconds(self) -> int:
+        return max(30, self.settings.refresh_seconds)
 
     def choose_p8(self) -> None:
         path = filedialog.askopenfilename(
@@ -640,11 +653,20 @@ class AccountTab:
             except Exception as exc:
                 self.events.put(("error", exc))
 
-            wait_seconds = max(30, self.settings.refresh_seconds)
-            self.next_check_at = time.time() + wait_seconds
+            wait_started_at = time.time()
+            wait_seconds = self.current_refresh_seconds()
+            self.next_check_at = wait_started_at + wait_seconds
             self.events.put(("next", self.next_check_at))
-            if self.stop_event.wait(wait_seconds):
-                break
+            while not self.stop_event.is_set():
+                latest_wait_seconds = self.current_refresh_seconds()
+                latest_next_check_at = wait_started_at + latest_wait_seconds
+                if abs(latest_next_check_at - self.next_check_at) >= 1:
+                    self.next_check_at = latest_next_check_at
+                    self.events.put(("next", self.next_check_at))
+                if time.time() >= self.next_check_at:
+                    break
+                if self.stop_event.wait(1):
+                    break
 
     def drain_events(self) -> None:
         if self.closed:
