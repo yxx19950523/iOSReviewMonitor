@@ -1,15 +1,17 @@
 # iOS 审核状态监控
 
-一个独立的 macOS / Windows 可视化桌面工具，用来监控 App Store Connect 后台的 iOS 审核状态。
+一个独立的 macOS / Windows 可视化桌面工具，用来监控 App Store Connect 后台的 iOS 审核状态，包括提交 App 的审核状态和产品页面优化审核状态。
 
 ## 功能
 
 - 可视化配置 App Store Connect API Key。
 - `.p8` 私钥通过文件选择器选择，不需要手动输入路径。
-- 自动读取一个或多个 App ID 的最新 iOS App Store 版本状态。
+- 自动读取一个或多个 App ID 的提交 App 审核状态。
+- 自动读取一个或多个 App ID 的产品页面优化审核状态。
 - 等待审核不播放提示音。
 - 进入正在审核播放特殊提示音。
 - 审核完成、等待发布、正在上架处理或 Ready for Sale 播放完成提示音。
+- 表格中每个 App 会显示两行：`提交 App` 和 `产品页面优化`。
 - 支持演示模式，方便先测试界面和提示音。
 - 提供 macOS / Windows 打包脚本和 GitHub Actions。
 

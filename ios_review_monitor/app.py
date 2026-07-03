@@ -33,6 +33,12 @@ DONE_STATES = {
     "READY_FOR_SALE",
     "REJECTED",
     "METADATA_REJECTED",
+    "APPROVED",
+    "RUNNING",
+    "COMPLETE",
+    "COMPLETED",
+    "ENDED",
+    "STOPPED",
 }
 
 STATE_LABELS = {
@@ -47,6 +53,13 @@ STATE_LABELS = {
     "METADATA_REJECTED": "审核完成 / 元数据被拒",
     "DEVELOPER_REJECTED": "开发者已拒绝",
     "INVALID_BINARY": "二进制无效",
+    "APPROVED": "已审核通过",
+    "RUNNING": "已完成 / 正在运行",
+    "COMPLETE": "已完成",
+    "COMPLETED": "已完成",
+    "ENDED": "已结束",
+    "STOPPED": "已停止",
+    "NOT_FOUND": "未找到",
 }
 
 
@@ -256,12 +269,14 @@ class ReviewMonitorApp:
         apps_frame.columnconfigure(0, weight=1)
         self.apps_tree = ttk.Treeview(
             apps_frame,
-            columns=("app_id", "version", "status", "raw", "checked"),
+            columns=("app_id", "kind", "name", "version", "status", "raw", "checked"),
             show="headings",
             height=7,
         )
         for column, title, width in [
             ("app_id", "App ID", 130),
+            ("kind", "类型", 120),
+            ("name", "名称", 150),
             ("version", "版本", 90),
             ("status", "状态", 150),
             ("raw", "原始状态", 190),
@@ -372,17 +387,38 @@ class ReviewMonitorApp:
                     for app_id in app_ids:
                         state = demo_states[demo_index % len(demo_states)]
                         demo_index += 1
-                        result = {"app_id": app_id, "version": "Demo 1.0", "state": state}
-                        self.events.put(("state", result))
+                        self.events.put(("state", {
+                            "app_id": app_id,
+                            "monitor_type": "app_review",
+                            "name": "App 提审",
+                            "version": "Demo 1.0",
+                            "state": state,
+                        }))
+                        ppo_state = demo_states[demo_index % len(demo_states)]
+                        demo_index += 1
+                        self.events.put(("state", {
+                            "app_id": app_id,
+                            "monitor_type": "product_page_optimization",
+                            "name": "Demo PPO",
+                            "version": "Demo 1.0",
+                            "state": ppo_state,
+                        }))
                 else:
                     if app_ids:
                         for app_id in app_ids:
+                            self.events.put(("log", f"开始检查 App {app_id} 的提交审核状态"))
                             try:
-                                self.events.put(("state", client.latest_ios_version(app_id)))
+                                self.events.put(("state", client.app_review_status(app_id)))
                             except Exception as exc:
-                                self.events.put(("error", f"App {app_id}：{exc}"))
+                                self.events.put(("error", f"App {app_id} 提交审核状态：{exc}"))
+                            self.events.put(("log", f"开始检查 App {app_id} 的产品页面优化审核状态"))
+                            try:
+                                self.events.put(("state", client.product_page_optimization_status(app_id)))
+                            except Exception as exc:
+                                self.events.put(("error", f"App {app_id} 产品页面优化：{exc}"))
                     else:
-                        self.events.put(("state", client.latest_ios_version()))
+                        self.events.put(("state", client.app_review_status()))
+                        self.events.put(("state", client.product_page_optimization_status()))
             except Exception as exc:
                 self.events.put(("error", exc))
 
@@ -400,6 +436,8 @@ class ReviewMonitorApp:
                 break
             if kind == "state":
                 self.handle_state(payload)  # type: ignore[arg-type]
+            elif kind == "log":
+                self.log(str(payload))
             elif kind == "error":
                 self.log(f"错误：{payload}")
                 self.checked_var.set(datetime.now().strftime("%H:%M:%S"))
@@ -409,37 +447,52 @@ class ReviewMonitorApp:
 
     def handle_state(self, result: dict[str, str]) -> None:
         app_id = str(result.get("app_id") or "--")
+        monitor_type = str(result.get("monitor_type") or "app_review")
+        kind_label = "提交 App" if monitor_type == "app_review" else "产品页面优化"
+        name = str(result.get("name") or kind_label)
         state = result.get("state", "UNKNOWN")
         category = classify_state(state)
         label = status_text(state)
         version = result.get("version", "--")
         checked_at = datetime.now().strftime("%H:%M:%S")
-        self.state_var.set(f"{app_id}：{label}")
+        self.state_var.set(f"{app_id} {kind_label}：{label}")
         self.version_var.set(version)
         self.checked_var.set(checked_at)
-        self.update_app_row(app_id, version, label, state, checked_at)
-        self.log(f"App {app_id} 状态：{label}（{state}），版本：{version}")
+        self.update_app_row(app_id, monitor_type, kind_label, name, version, label, state, checked_at)
+        self.log(f"App {app_id} {kind_label} 状态：{label}（{state}），版本：{version}，名称：{name}")
         self.paint_status(category)
 
-        if category != self.last_categories.get(app_id):
+        key = f"{app_id}:{monitor_type}"
+        if category != self.last_categories.get(key):
             if category == "in_review":
-                self.log(f"提示：App {app_id} 进入正在审核")
+                self.log(f"提示：App {app_id} {kind_label} 进入正在审核")
                 if self.settings.sound_enabled:
                     play_sound("in_review")
             elif category == "done":
-                self.log(f"提示：App {app_id} 审核流程已完成")
+                self.log(f"提示：App {app_id} {kind_label} 审核流程已完成")
                 if self.settings.sound_enabled:
                     play_sound("done")
-        self.last_categories[app_id] = category
+        self.last_categories[key] = category
 
-    def update_app_row(self, app_id: str, version: str, label: str, state: str, checked_at: str) -> None:
-        values = (app_id, version, label, state, checked_at)
-        row_id = self.app_rows.get(app_id)
+    def update_app_row(
+        self,
+        app_id: str,
+        monitor_type: str,
+        kind_label: str,
+        name: str,
+        version: str,
+        label: str,
+        state: str,
+        checked_at: str,
+    ) -> None:
+        values = (app_id, kind_label, name, version, label, state, checked_at)
+        key = f"{app_id}:{monitor_type}"
+        row_id = self.app_rows.get(key)
         if row_id and self.apps_tree.exists(row_id):
             self.apps_tree.item(row_id, values=values)
             return
         row_id = self.apps_tree.insert("", "end", values=values)
-        self.app_rows[app_id] = row_id
+        self.app_rows[key] = row_id
 
     def paint_status(self, category: str) -> None:
         colors = {

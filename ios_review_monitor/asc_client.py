@@ -78,7 +78,7 @@ class AppStoreConnectClient:
             raise ASCError(f"没有找到 Bundle ID：{bundle_id}")
         return str(items[0]["id"])
 
-    def latest_ios_version(self, app_id: str | None = None) -> dict[str, Any]:
+    def app_review_status(self, app_id: str | None = None) -> dict[str, Any]:
         app_id = (app_id or "").strip() or self.resolve_app_id()
         data = self._get(
             f"/apps/{app_id}/appStoreVersions",
@@ -95,9 +95,69 @@ class AppStoreConnectClient:
         attrs = item.get("attributes") or {}
         return {
             "app_id": app_id,
+            "monitor_type": "app_review",
+            "name": "App 提审",
             "version_id": item.get("id", ""),
             "version": attrs.get("versionString", "未知版本"),
             "state": attrs.get("appStoreState", "UNKNOWN"),
             "created_date": attrs.get("createdDate", ""),
             "copyright": attrs.get("copyright", ""),
         }
+
+    def product_page_optimization_status(self, app_id: str | None = None) -> dict[str, Any]:
+        app_id = (app_id or "").strip() or self.resolve_app_id()
+        experiments = self._list_product_page_optimizations(app_id)
+        if not experiments:
+            return {
+                "app_id": app_id,
+                "monitor_type": "product_page_optimization",
+                "name": "产品页面优化",
+                "version": "--",
+                "state": "NOT_FOUND",
+                "experiment_id": "",
+                "experiment_name": "未找到产品页面优化",
+            }
+
+        item = experiments[0]
+        attrs = item.get("attributes") or {}
+        relationships = item.get("relationships") or {}
+        app_store_version = relationships.get("appStoreVersion", {}).get("data") or {}
+        return {
+            "app_id": app_id,
+            "monitor_type": "product_page_optimization",
+            "name": attrs.get("name") or "产品页面优化",
+            "version": app_store_version.get("id") or "--",
+            "state": attrs.get("state", "UNKNOWN"),
+            "experiment_id": item.get("id", ""),
+            "experiment_name": attrs.get("name", ""),
+        }
+
+    def _list_product_page_optimizations(self, app_id: str) -> list[dict[str, Any]]:
+        params = {"sort": "-createdDate", "limit": 10, "include": "appStoreVersion"}
+        errors: list[str] = []
+
+        try:
+            data = self._get(f"/apps/{app_id}/appStoreVersionExperiments", params)
+            items = data.get("data") or []
+            if items:
+                return items
+        except Exception as exc:
+            errors.append(str(exc))
+
+        versions = self._get(
+            f"/apps/{app_id}/appStoreVersions",
+            {"filter[platform]": "IOS", "sort": "-createdDate", "limit": 5},
+        ).get("data") or []
+        for version in versions:
+            version_id = version.get("id")
+            if not version_id:
+                continue
+            try:
+                data = self._get(f"/appStoreVersions/{version_id}/appStoreVersionExperiments", params)
+                items = data.get("data") or []
+                if items:
+                    return items
+            except Exception as exc:
+                errors.append(str(exc))
+
+        return []
