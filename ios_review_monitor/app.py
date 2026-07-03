@@ -278,18 +278,16 @@ class ReviewMonitorApp:
         apps_frame.columnconfigure(0, weight=1)
         self.apps_tree = ttk.Treeview(
             apps_frame,
-            columns=("app_id", "kind", "name", "version", "status", "raw", "checked"),
+            columns=("app_id", "status", "raw", "checked", "detail"),
             show="headings",
             height=7,
         )
         for column, title, width in [
             ("app_id", "App ID", 130),
-            ("kind", "类型", 120),
-            ("name", "名称", 150),
-            ("version", "版本", 90),
             ("status", "状态", 150),
             ("raw", "原始状态", 190),
             ("checked", "检查时间", 90),
+            ("detail", "详情", 360),
         ]:
             self.apps_tree.heading(column, text=title)
             self.apps_tree.column(column, width=width, anchor="w")
@@ -397,12 +395,9 @@ class ReviewMonitorApp:
                 app_name = app_info.get("name") or "未命名 App"
                 bundle_id = app_info.get("bundle_id") or "未知 Bundle ID"
                 self.events.put(("log", f"App ID 有效：{app_id}，名称：{app_name}，Bundle ID：{bundle_id}"))
-                self.events.put(("log", f"自检 App {app_id} 的提交审核状态接口"))
-                app_status = client.app_review_status(app_id)
-                self.events.put(("log", f"自检通过：App {app_id} 提交 App 状态为 {app_status.get('state', 'UNKNOWN')}"))
-                self.events.put(("log", f"自检 App {app_id} 的产品页面优化接口"))
-                ppo_status = client.product_page_optimization_status(app_id)
-                self.events.put(("log", f"自检通过：App {app_id} 产品页面优化状态为 {ppo_status.get('state', 'UNKNOWN')}"))
+                self.events.put(("log", f"自检 App {app_id} 的最终审核状态"))
+                review_status = client.unified_review_status(app_id)
+                self.events.put(("log", f"自检通过：App {app_id} 最终状态为 {review_status.get('state', 'UNKNOWN')}；{review_status.get('detail', '')}"))
 
             self.events.put(("validation_ok", "配置自检通过，开始监控"))
         except Exception as exc:
@@ -450,36 +445,22 @@ class ReviewMonitorApp:
                         demo_index += 1
                         self.events.put(("state", {
                             "app_id": app_id,
-                            "monitor_type": "app_review",
-                            "name": "App 提审",
+                            "monitor_type": "unified_review",
+                            "name": "最终审核状态",
                             "version": "Demo 1.0",
                             "state": state,
-                        }))
-                        ppo_state = demo_states[demo_index % len(demo_states)]
-                        demo_index += 1
-                        self.events.put(("state", {
-                            "app_id": app_id,
-                            "monitor_type": "product_page_optimization",
-                            "name": "Demo PPO",
-                            "version": "Demo 1.0",
-                            "state": ppo_state,
+                            "detail": "演示模式",
                         }))
                 else:
                     if app_ids:
                         for app_id in app_ids:
-                            self.events.put(("log", f"开始检查 App {app_id} 的提交审核状态"))
+                            self.events.put(("log", f"开始检查 App {app_id} 的最终审核状态"))
                             try:
-                                self.events.put(("state", client.app_review_status(app_id)))
+                                self.events.put(("state", client.unified_review_status(app_id)))
                             except Exception as exc:
-                                self.events.put(("error", f"App {app_id} 提交审核状态：{exc}"))
-                            self.events.put(("log", f"开始检查 App {app_id} 的产品页面优化审核状态"))
-                            try:
-                                self.events.put(("state", client.product_page_optimization_status(app_id)))
-                            except Exception as exc:
-                                self.events.put(("error", f"App {app_id} 产品页面优化：{exc}"))
+                                self.events.put(("error", f"App {app_id} 最终审核状态：{exc}"))
                     else:
-                        self.events.put(("state", client.app_review_status()))
-                        self.events.put(("state", client.product_page_optimization_status()))
+                        self.events.put(("state", client.unified_review_status()))
             except Exception as exc:
                 self.events.put(("error", exc))
 
@@ -522,30 +503,28 @@ class ReviewMonitorApp:
 
     def handle_state(self, result: dict[str, str]) -> None:
         app_id = str(result.get("app_id") or "--")
-        monitor_type = str(result.get("monitor_type") or "app_review")
-        kind_label = "提交 App" if monitor_type == "app_review" else "产品页面优化"
-        name = str(result.get("name") or kind_label)
+        name = str(result.get("name") or "最终审核状态")
         source = str(result.get("source") or "app_store_version")
+        detail = str(result.get("detail") or source)
         state = result.get("state", "UNKNOWN")
         category = classify_state(state)
         label = status_text(state)
-        version = result.get("version", "--")
         checked_at = datetime.now().strftime("%H:%M:%S")
-        self.state_var.set(f"{app_id} {kind_label}：{label}")
-        self.version_var.set(version)
+        self.state_var.set(f"{app_id}：{label}")
+        self.version_var.set(name)
         self.checked_var.set(checked_at)
-        self.update_app_row(app_id, monitor_type, kind_label, name, version, label, state, checked_at)
-        self.log(f"App {app_id} {kind_label} 状态：{label}（{state}），版本：{version}，名称：{name}，来源：{source}")
+        self.update_app_row(app_id, label, state, checked_at, detail)
+        self.log(f"App {app_id} 最终审核状态：{label}（{state}），来源：{source}，详情：{detail}")
         self.paint_status(category)
 
-        key = f"{app_id}:{monitor_type}"
+        key = app_id
         if category != self.last_categories.get(key):
             if category == "in_review":
-                self.log(f"提示：App {app_id} {kind_label} 进入正在审核")
+                self.log(f"提示：App {app_id} 进入正在审核")
                 if self.settings.sound_enabled:
                     play_sound("in_review")
             elif category == "done":
-                self.log(f"提示：App {app_id} {kind_label} 审核流程已完成")
+                self.log(f"提示：App {app_id} 审核流程已完成")
                 if self.settings.sound_enabled:
                     play_sound("done")
         self.last_categories[key] = category
@@ -553,16 +532,13 @@ class ReviewMonitorApp:
     def update_app_row(
         self,
         app_id: str,
-        monitor_type: str,
-        kind_label: str,
-        name: str,
-        version: str,
         label: str,
         state: str,
         checked_at: str,
+        detail: str,
     ) -> None:
-        values = (app_id, kind_label, name, version, label, state, checked_at)
-        key = f"{app_id}:{monitor_type}"
+        values = (app_id, label, state, checked_at, detail)
+        key = app_id
         row_id = self.app_rows.get(key)
         if row_id and self.apps_tree.exists(row_id):
             self.apps_tree.item(row_id, values=values)

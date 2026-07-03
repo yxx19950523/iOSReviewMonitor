@@ -100,6 +100,19 @@ class AppStoreConnectClient:
     def _is_active_review_state(self, state: Any) -> bool:
         return self._is_in_review_state(state) or self._is_waiting_review_state(state)
 
+    def _status_priority(self, item: dict[str, Any]) -> int:
+        state = item.get("state")
+        if self._is_in_review_state(state):
+            return 40
+        if self._is_waiting_review_state(state):
+            return 30
+        text = str(state or "").upper()
+        if any(token in text for token in ("APPROVED", "ACCEPTED", "COMPLETE", "COMPLETED", "READY_FOR_SALE")):
+            return 20
+        if text in {"NOT_IN_REVIEW", "NOT_FOUND"}:
+            return 5
+        return 0
+
     def resolve_app_id(self) -> str:
         if self.config.app_id.strip():
             return self.config.app_id.strip()
@@ -163,6 +176,42 @@ class AppStoreConnectClient:
             "created_date": attrs.get("createdDate", ""),
             "copyright": attrs.get("copyright", ""),
         }
+
+    def unified_review_status(self, app_id: str | None = None) -> dict[str, Any]:
+        app_id = (app_id or "").strip() or self.resolve_app_id()
+        candidates: list[dict[str, Any]] = []
+        try:
+            candidates.append(self.app_review_status(app_id))
+        except Exception as exc:
+            candidates.append({
+                "app_id": app_id,
+                "monitor_type": "app_review",
+                "name": "App 提审",
+                "version": "--",
+                "state": "UNKNOWN",
+                "source": f"app_review_error:{exc}",
+            })
+        try:
+            candidates.append(self.product_page_optimization_status(app_id))
+        except Exception as exc:
+            candidates.append({
+                "app_id": app_id,
+                "monitor_type": "product_page_optimization",
+                "name": "产品页面优化",
+                "version": "--",
+                "state": "UNKNOWN",
+                "source": f"ppo_error:{exc}",
+            })
+
+        chosen = sorted(candidates, key=self._status_priority, reverse=True)[0]
+        detail = "；".join(
+            f"{item.get('name') or item.get('monitor_type')}={item.get('state', 'UNKNOWN')}({item.get('source', '')})"
+            for item in candidates
+        )
+        chosen = dict(chosen)
+        chosen["monitor_type"] = "unified_review"
+        chosen["detail"] = detail
+        return chosen
 
     def app_review_submission_status(self, app_id: str) -> dict[str, Any] | None:
         submissions = self._list_review_submissions(app_id)
