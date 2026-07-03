@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import queue
+import re
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -76,6 +77,17 @@ def status_text(state: str) -> str:
     return STATE_LABELS.get(state, state or "未知")
 
 
+def parse_app_ids(raw: str) -> list[str]:
+    seen: set[str] = set()
+    app_ids: list[str] = []
+    for item in re.split(r"[\s,;，；]+", raw.strip()):
+        app_id = item.strip()
+        if app_id and app_id not in seen:
+            seen.add(app_id)
+            app_ids.append(app_id)
+    return app_ids
+
+
 @dataclass
 class Settings:
     key_id: str = ""
@@ -102,7 +114,8 @@ class ReviewMonitorApp:
         self.stop_event = threading.Event()
         self.worker: threading.Thread | None = None
         self.running = False
-        self.last_category = ""
+        self.last_categories: dict[str, str] = {}
+        self.app_rows: dict[str, str] = {}
         self.latest_state = "未开始"
         self.next_check_at = 0.0
         self.started_at = 0.0
@@ -130,7 +143,7 @@ class ReviewMonitorApp:
             key_id=self.key_id_var.get().strip(),
             issuer_id=self.issuer_id_var.get().strip(),
             p8_path=self.p8_path_var.get().strip(),
-            app_id=self.app_id_var.get().strip(),
+            app_id=self.app_ids_text.get("1.0", "end").strip(),
             bundle_id=self.bundle_id_var.get().strip(),
             refresh_seconds=refresh,
             sound_enabled=bool(self.sound_var.get()),
@@ -168,7 +181,6 @@ class ReviewMonitorApp:
         self.key_id_var = tk.StringVar()
         self.issuer_id_var = tk.StringVar()
         self.p8_path_var = tk.StringVar()
-        self.app_id_var = tk.StringVar()
         self.bundle_id_var = tk.StringVar()
         self.refresh_var = tk.StringVar()
         self.sound_var = tk.BooleanVar()
@@ -185,8 +197,17 @@ class ReviewMonitorApp:
         self.p8_label.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         ttk.Button(p8_row, text="选择文件...", command=self.choose_p8).grid(row=0, column=1)
 
-        self.add_entry(config, "App ID（可选）", self.app_id_var, 6)
-        self.add_entry(config, "Bundle ID（未填 App ID 时使用）", self.bundle_id_var, 8)
+        ttk.Label(config, text="App ID（可填多个，用逗号或换行分隔）").grid(row=6, column=0, sticky="w", pady=(8, 3))
+        app_id_frame = ttk.Frame(config)
+        app_id_frame.grid(row=7, column=0, sticky="ew")
+        app_id_frame.columnconfigure(0, weight=1)
+        self.app_ids_text = tk.Text(app_id_frame, height=4, width=42, wrap="word")
+        self.app_ids_text.grid(row=0, column=0, sticky="ew")
+        app_scroll = ttk.Scrollbar(app_id_frame, command=self.app_ids_text.yview)
+        app_scroll.grid(row=0, column=1, sticky="ns")
+        self.app_ids_text.configure(yscrollcommand=app_scroll.set)
+
+        self.add_entry(config, "Bundle ID（备用：只监控一个 App）", self.bundle_id_var, 8)
         self.add_entry(config, "检查间隔（秒，至少 30）", self.refresh_var, 10)
 
         ttk.Checkbutton(config, text="启用提示音", variable=self.sound_var).grid(row=12, column=0, sticky="w", pady=(10, 0))
@@ -229,6 +250,30 @@ class ReviewMonitorApp:
         ttk.Label(summary, text="运行时长").grid(row=3, column=0, sticky="w", pady=(12, 3))
         ttk.Label(summary, textvariable=self.running_var, style="Metric.TLabel").grid(row=4, column=0, sticky="w")
 
+        apps_frame = ttk.LabelFrame(body, text="监控 App", padding=8)
+        apps_frame.grid(row=2, column=1, sticky="nsew", pady=(0, 12))
+        apps_frame.rowconfigure(0, weight=1)
+        apps_frame.columnconfigure(0, weight=1)
+        self.apps_tree = ttk.Treeview(
+            apps_frame,
+            columns=("app_id", "version", "status", "raw", "checked"),
+            show="headings",
+            height=7,
+        )
+        for column, title, width in [
+            ("app_id", "App ID", 130),
+            ("version", "版本", 90),
+            ("status", "状态", 150),
+            ("raw", "原始状态", 190),
+            ("checked", "检查时间", 90),
+        ]:
+            self.apps_tree.heading(column, text=title)
+            self.apps_tree.column(column, width=width, anchor="w")
+        self.apps_tree.grid(row=0, column=0, sticky="nsew")
+        apps_scroll = ttk.Scrollbar(apps_frame, command=self.apps_tree.yview)
+        apps_scroll.grid(row=0, column=1, sticky="ns")
+        self.apps_tree.configure(yscrollcommand=apps_scroll.set)
+
         rules = ttk.LabelFrame(body, text="提示规则", padding=12)
         rules.grid(row=1, column=1, sticky="ew", pady=(12, 12))
         ttk.Label(rules, text="等待审核：只更新界面和日志，不播放声音。").grid(row=0, column=0, sticky="w")
@@ -253,7 +298,8 @@ class ReviewMonitorApp:
         self.key_id_var.set(self.settings.key_id)
         self.issuer_id_var.set(self.settings.issuer_id)
         self.p8_path_var.set(self.settings.p8_path or "尚未选择 .p8 文件")
-        self.app_id_var.set(self.settings.app_id)
+        self.app_ids_text.delete("1.0", "end")
+        self.app_ids_text.insert("1.0", self.settings.app_id)
         self.bundle_id_var.set(self.settings.bundle_id)
         self.refresh_var.set(str(self.settings.refresh_seconds))
         self.sound_var.set(self.settings.sound_enabled)
@@ -277,19 +323,23 @@ class ReviewMonitorApp:
                 missing.append("Issuer ID")
             if not self.settings.p8_path or self.settings.p8_path == "尚未选择 .p8 文件":
                 missing.append(".p8 私钥文件")
-            if not self.settings.app_id and not self.settings.bundle_id:
-                missing.append("App ID 或 Bundle ID")
+            if not parse_app_ids(self.settings.app_id) and not self.settings.bundle_id:
+                missing.append("App ID")
             if missing:
                 messagebox.showwarning("配置不完整", "请补充：" + "、".join(missing))
                 return
 
         self.running = True
         self.started_at = time.time()
-        self.last_category = ""
+        self.last_categories = {}
+        self.app_rows = {}
+        for item in self.apps_tree.get_children():
+            self.apps_tree.delete(item)
         self.stop_event.clear()
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
-        self.log("开始监控")
+        app_count = len(parse_app_ids(self.settings.app_id)) or (1 if self.settings.bundle_id else 0)
+        self.log(f"开始监控，App 数量：{app_count}")
         self.worker = threading.Thread(target=self.worker_loop, daemon=True)
         self.worker.start()
 
@@ -313,15 +363,26 @@ class ReviewMonitorApp:
         )
         demo_states = ["WAITING_FOR_REVIEW", "IN_REVIEW", "PENDING_DEVELOPER_RELEASE", "READY_FOR_SALE"]
         demo_index = 0
+        app_ids = parse_app_ids(self.settings.app_id)
+        if self.settings.demo_mode and not app_ids:
+            app_ids = ["Demo-App-1", "Demo-App-2"]
         while not self.stop_event.is_set():
             try:
                 if self.settings.demo_mode:
-                    state = demo_states[demo_index % len(demo_states)]
-                    demo_index += 1
-                    result = {"version": "Demo 1.0", "state": state}
+                    for app_id in app_ids:
+                        state = demo_states[demo_index % len(demo_states)]
+                        demo_index += 1
+                        result = {"app_id": app_id, "version": "Demo 1.0", "state": state}
+                        self.events.put(("state", result))
                 else:
-                    result = client.latest_ios_version()
-                self.events.put(("state", result))
+                    if app_ids:
+                        for app_id in app_ids:
+                            try:
+                                self.events.put(("state", client.latest_ios_version(app_id)))
+                            except Exception as exc:
+                                self.events.put(("error", f"App {app_id}：{exc}"))
+                    else:
+                        self.events.put(("state", client.latest_ios_version()))
             except Exception as exc:
                 self.events.put(("error", exc))
 
@@ -347,26 +408,38 @@ class ReviewMonitorApp:
         self.root.after(200, self.drain_events)
 
     def handle_state(self, result: dict[str, str]) -> None:
+        app_id = str(result.get("app_id") or "--")
         state = result.get("state", "UNKNOWN")
         category = classify_state(state)
         label = status_text(state)
         version = result.get("version", "--")
-        self.state_var.set(label)
+        checked_at = datetime.now().strftime("%H:%M:%S")
+        self.state_var.set(f"{app_id}：{label}")
         self.version_var.set(version)
-        self.checked_var.set(datetime.now().strftime("%H:%M:%S"))
-        self.log(f"状态：{label}（{state}），版本：{version}")
+        self.checked_var.set(checked_at)
+        self.update_app_row(app_id, version, label, state, checked_at)
+        self.log(f"App {app_id} 状态：{label}（{state}），版本：{version}")
         self.paint_status(category)
 
-        if category != self.last_category:
+        if category != self.last_categories.get(app_id):
             if category == "in_review":
-                self.log("提示：进入正在审核")
+                self.log(f"提示：App {app_id} 进入正在审核")
                 if self.settings.sound_enabled:
                     play_sound("in_review")
             elif category == "done":
-                self.log("提示：审核流程已完成")
+                self.log(f"提示：App {app_id} 审核流程已完成")
                 if self.settings.sound_enabled:
                     play_sound("done")
-        self.last_category = category
+        self.last_categories[app_id] = category
+
+    def update_app_row(self, app_id: str, version: str, label: str, state: str, checked_at: str) -> None:
+        values = (app_id, version, label, state, checked_at)
+        row_id = self.app_rows.get(app_id)
+        if row_id and self.apps_tree.exists(row_id):
+            self.apps_tree.item(row_id, values=values)
+            return
+        row_id = self.apps_tree.insert("", "end", values=values)
+        self.app_rows[app_id] = row_id
 
     def paint_status(self, category: str) -> None:
         colors = {

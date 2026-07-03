@@ -78,8 +78,8 @@ class AppStoreConnectClient:
             raise ASCError(f"没有找到 Bundle ID：{bundle_id}")
         return str(items[0]["id"])
 
-    def latest_ios_version(self) -> dict[str, Any]:
-        app_id = self.resolve_app_id()
+    def latest_ios_version(self, app_id: str | None = None) -> dict[str, Any]:
+        app_id = (app_id or "").strip() or self.resolve_app_id()
         data = self._get(
             f"/apps/{app_id}/appStoreVersions",
             {
