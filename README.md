@@ -100,10 +100,11 @@ Actions -> Build iOS Review Monitor -> Run workflow
 
 构建完成后，在本次 workflow run 的 `Artifacts` 区域下载：
 
-- `iOSReviewMonitor-macOS`
+- `iOSReviewMonitor-macOS-AppleSilicon`：M1 / M2 / M3 / M4 等 M 系列 Mac 下载这个
+- `iOSReviewMonitor-macOS-Intel`：Intel Mac 下载这个
 - `iOSReviewMonitor-Windows`
 
-macOS 下载后如果提示 Apple 无法验证，先解压 `iOS审核状态监控-macOS.zip`，再右键 App 选择“打开”。如果仍然打不开，可以在终端执行：
+macOS 下载后如果提示 Apple 无法验证，先解压对应的 zip，再右键 App 选择“打开”。如果仍然打不开，可以在终端执行：
 
 ```bash
 chmod +x "/你的路径/iOS审核状态监控.app/Contents/MacOS/iOS审核状态监控"
