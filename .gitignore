@@ -5,3 +5,6 @@ __pycache__/
 build/
 dist/
 *.spec
+scripts/mac_monitor.config.json
+scripts/mac_monitor_state.json
+scripts/mac_monitor.log

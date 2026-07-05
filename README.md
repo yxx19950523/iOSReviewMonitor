@@ -34,6 +34,44 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
+## Mac 终端脚本监听
+
+如果不想打包成 App，可以直接用脚本常驻监听：
+
+```bash
+cd iOSReviewMonitor
+python3 -m pip install -r requirements.txt
+cp scripts/mac_monitor.config.example.json scripts/mac_monitor.config.json
+```
+
+编辑 `scripts/mac_monitor.config.json`，填入 Key ID、Issuer ID、`.p8` 完整路径和 App ID。
+
+前台运行：
+
+```bash
+python3 scripts/mac_monitor.py --config scripts/mac_monitor.config.json
+```
+
+只测试检查一次：
+
+```bash
+python3 scripts/mac_monitor.py --config scripts/mac_monitor.config.json --once
+```
+
+后台运行：
+
+```bash
+nohup python3 scripts/mac_monitor.py --config scripts/mac_monitor.config.json > scripts/mac_monitor.log 2>&1 &
+```
+
+停止后台脚本：
+
+```bash
+pkill -f scripts/mac_monitor.py
+```
+
+脚本规则和桌面版一致：等待审核不提醒，进入正在审核播放提示音，审核完成播放完成提示音。配置里的 `email.enabled` 改成 `true` 后，还可以通过 SMTP 发邮件提醒。
+
 ## 配置说明
 
 在 App Store Connect 创建 API Key 后，在界面中填写：

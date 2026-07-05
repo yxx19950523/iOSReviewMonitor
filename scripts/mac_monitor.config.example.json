@@ -1,0 +1,23 @@
+{
+  "interval_seconds": 60,
+  "sound_enabled": true,
+  "state_file": "scripts/mac_monitor_state.json",
+  "accounts": [
+    {
+      "name": "账号1",
+      "key_id": "填写 App Store Connect Key ID",
+      "issuer_id": "填写 Issuer ID",
+      "p8_path": "/完整路径/AuthKey_XXXXXX.p8",
+      "app_ids": ["1234567890"]
+    }
+  ],
+  "email": {
+    "enabled": false,
+    "smtp_host": "smtp.qq.com",
+    "smtp_port": 465,
+    "username": "你的邮箱@qq.com",
+    "password": "邮箱 SMTP 授权码",
+    "from": "你的邮箱@qq.com",
+    "to": ["接收提醒的邮箱@qq.com"]
+  }
+}
