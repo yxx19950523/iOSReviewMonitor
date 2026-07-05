@@ -102,3 +102,13 @@ Actions -> Build iOS Review Monitor -> Run workflow
 
 - `iOSReviewMonitor-macOS`
 - `iOSReviewMonitor-Windows`
+
+macOS 下载后如果提示 Apple 无法验证，先解压 `iOS审核状态监控-macOS.zip`，再右键 App 选择“打开”。如果仍然打不开，可以在终端执行：
+
+```bash
+chmod +x "/你的路径/iOS审核状态监控.app/Contents/MacOS/iOS审核状态监控"
+xattr -dr com.apple.quarantine "/你的路径/iOS审核状态监控.app"
+open "/你的路径/iOS审核状态监控.app"
+```
+
+没有 Apple Developer ID 公证的免费构建都会有这个提示；这只代表未公证，不等于包含恶意软件。

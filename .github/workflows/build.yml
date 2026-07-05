@@ -23,7 +23,20 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install -r requirements.txt
       - run: python -m PyInstaller --noconfirm --windowed --name "iOS审核状态监控" main.py
+      - name: Package macOS app
+        if: runner.os == 'macOS'
+        run: |
+          chmod +x "dist/iOS审核状态监控.app/Contents/MacOS/iOS审核状态监控"
+          codesign --force --deep --sign - "dist/iOS审核状态监控.app"
+          mkdir -p release
+          ditto -c -k --keepParent "dist/iOS审核状态监控.app" "release/iOS审核状态监控-macOS.zip"
+      - name: Package Windows app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Compress-Archive -Path "dist\*" -DestinationPath "release\iOS审核状态监控-Windows.zip" -Force
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/**
+          path: release/**
